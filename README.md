@@ -16,8 +16,15 @@ cmake --build build
 The same sources can be built directly with MinGW-w64 GCC:
 
 ```text
-g++ -std=c++17 -Iinclude -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -municode src/main.cpp src/cli.cpp src/environment.cpp -ladvapi32 -luser32 -o Pather.exe
+g++ -std=c++17 -Iinclude -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -municode -static -static-libgcc -static-libstdc++ src/main.cpp src/cli.cpp src/environment.cpp -ladvapi32 -luser32 -o Pather.exe
 ```
+
+The MinGW runtime libraries are linked statically, so adding the folder containing
+`Pather.exe` to `PATH` does not also require adding the MSYS2 `ucrt64\bin` folder.
+
+In PowerShell, add the containing folder (for example, `G:\Projects\pather-cli`),
+not the `.exe` file. Open a new terminal after changing `PATH`; an existing shell
+keeps its original environment. From the current directory, run `.\pather.exe`.
 
 Run the commands from a Windows/MinGW environment. System-scope changes normally
 require an elevated shell.

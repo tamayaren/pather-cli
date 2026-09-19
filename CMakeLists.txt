@@ -15,5 +15,5 @@ target_compile_definitions(Pather PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN N
 target_link_libraries(Pather PRIVATE advapi32 user32)
 
 if(MINGW)
-    target_link_options(Pather PRIVATE -municode)
+    target_link_options(Pather PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
