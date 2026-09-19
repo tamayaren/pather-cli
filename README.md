@@ -29,11 +29,18 @@ keeps its original environment. From the current directory, run `.\pather.exe`.
 Run the commands from a Windows/MinGW environment. System-scope changes normally
 require an elevated shell.
 
-Exit status is `0` for success, `1` when a requested entry/path is not found, `2` for invalid usage, and `3` for an operational failure. `-ls` defaults to both scopes; setting defaults to user; removal defaults to both when `-e` is omitted. System changes generally require elevation. Mutations broadcast `WM_SETTINGCHANGE` for `Environment`.
+Exit status is `0` for success, `1` when a requested entry/path is not found, `2` for invalid usage, and `3` for an operational failure. `-ls` defaults to both scopes; setting and Path appending default to user; removal defaults to both when `-e` is omitted. System changes generally require elevation. Mutations broadcast `WM_SETTINGCHANGE` for `Environment`.
 
 Names and values are compared case-insensitively using Windows ordinal comparison.
-Path matching is exact: Pather does not trim, normalize, expand, or split values on
-semicolons. Listing and checking show the matching scope and variable name.
+Generic value matching is exact: Pather does not trim, normalize, or expand values.
+The Path-specific forms treat `;` as the separator, preserve the existing registry
+value type, and match each entry exactly without trimming or expansion. Listing and
+checking show the matching scope and variable name.
+
+When the second positional argument is `user`, `sys`, `system`, or `all`, the command
+is interpreted as Path appending. To set an arbitrary variable to one of those literal
+values, use an explicit scope option, for example `pather MODE sys -e user`.
+Individual Path operands must not contain `;`.
 
 Examples:
 
@@ -41,7 +48,16 @@ Examples:
 pather -ls
 pather -ls -e sys
 pather MyPath "C:\\Program Files\\Tool" -e user
+pather "C:\\Tools" user
+pather "C:\\Tools" sys
+pather -rm "C:\\Tools" user
+pather -rm "C:\\Tools" all
 pather -rm -n MyPath -e all
 pather -rm -p "C:\\Program Files\\Tool" -e all
 pather -c "C:\\Program Files\\Tool"
 ```
+
+`pather PATH [user|sys|all]` appends an entry to the selected `Path` registry
+variable. `pather -rm PATH [user|sys|all]` removes matching entries from that
+variable. The existing `-rm -p PATH` form remains the generic exact-value removal
+operation for compatibility.

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <functional>
 #include <iterator>
+#include <utility>
 
 namespace pather {
 namespace {
@@ -97,6 +98,29 @@ std::wstring string_value(const EnumeratedValue& value) {
     return result;
 }
 
+std::vector<std::wstring> path_entries(const std::wstring& value) {
+    std::vector<std::wstring> entries;
+    size_t start = 0;
+    while (true) {
+        const size_t separator = value.find(L';', start);
+        entries.push_back(value.substr(start, separator == std::wstring::npos
+                                                ? std::wstring::npos
+                                                : separator - start));
+        if (separator == std::wstring::npos) break;
+        start = separator + 1;
+    }
+    return entries;
+}
+
+std::wstring join_path_entries(const std::vector<std::wstring>& entries) {
+    std::wstring value;
+    for (size_t index = 0; index < entries.size(); ++index) {
+        if (index != 0) value += L';';
+        value += entries[index];
+    }
+    return value;
+}
+
 void append_error(std::wstring& target, const std::wstring& error) {
     if (!target.empty()) target += L"; ";
     target += error;
@@ -112,6 +136,45 @@ bool open_key(const Root& descriptor, REGSAM access, HKEY& key, std::wstring& er
 }
 
 Result mutation_error(const std::wstring& error) { Result result; result.error = error; return result; }
+
+class PathLock {
+public:
+    PathLock(Scope scope, std::wstring& error) {
+        const wchar_t* name = scope == Scope::User
+            ? L"Local\\PatherCliPathUser"
+            : L"Local\\PatherCliPathSystem";
+        handle_ = CreateMutexW(nullptr, FALSE, name);
+        if (!handle_) {
+            error = L"could not create Path update lock: " + win_error(GetLastError());
+            return;
+        }
+
+        const DWORD status = WaitForSingleObject(handle_, INFINITE);
+        if (status == WAIT_OBJECT_0 || status == WAIT_ABANDONED) {
+            acquired_ = true;
+        } else {
+            error = L"could not acquire Path update lock: " + win_error(GetLastError());
+        }
+    }
+
+    ~PathLock() {
+        if (acquired_) ReleaseMutex(handle_);
+        if (handle_) CloseHandle(handle_);
+    }
+
+    bool acquired() const { return acquired_; }
+
+private:
+    HANDLE handle_ = nullptr;
+    bool acquired_ = false;
+};
+
+bool registry_string_size(const std::wstring& value, DWORD& bytes) {
+    const size_t max_characters = static_cast<size_t>(MAXDWORD) / sizeof(wchar_t);
+    if (value.size() >= max_characters) return false;
+    bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+    return true;
+}
 
 Result mutate(Scope scope, const std::function<Result(const Root&)>& operation) {
     Result total;
@@ -162,6 +225,102 @@ Result remove_from_root(const Root& descriptor, const std::function<bool(const s
         }
     }
     RegCloseKey(key);
+    return result;
+}
+
+Result update_path_entry(const Root& descriptor, const std::wstring& path, bool append) {
+    std::wstring error;
+    PathLock lock(descriptor.scope, error);
+    if (!lock.acquired()) return mutation_error(error);
+
+    HKEY key = nullptr;
+    if (!open_key(descriptor, KEY_QUERY_VALUE | KEY_SET_VALUE, key, error)) return mutation_error(error);
+
+    EnumeratedValue path_value;
+    bool present = false;
+    DWORD index = 0;
+    while (true) {
+        EnumeratedValue value;
+        const LONG status = read_value(key, index, value);
+        if (status == ERROR_NO_MORE_ITEMS) break;
+        if (status != ERROR_SUCCESS) {
+            RegCloseKey(key);
+            return mutation_error(std::wstring(descriptor.label) + L" environment: " + win_error(status));
+        }
+        if (equal_fold(value.name, L"Path")) {
+            path_value = std::move(value);
+            present = true;
+            break;
+        }
+        ++index;
+    }
+
+    if (present && !is_string_type(path_value.type)) {
+        RegCloseKey(key);
+        return mutation_error(std::wstring(descriptor.label) + L" environment: Path is not a string value");
+    }
+
+    Result result;
+    if (!present) {
+        if (!append) {
+            RegCloseKey(key);
+            return result;
+        }
+        DWORD bytes = 0;
+        if (!registry_string_size(path, bytes)) {
+            RegCloseKey(key);
+            return mutation_error(std::wstring(descriptor.label) + L" environment: Path value is too large");
+        }
+        const LONG status = RegSetValueExW(key, L"Path", 0, REG_SZ,
+                                           reinterpret_cast<const BYTE*>(path.c_str()), bytes);
+        RegCloseKey(key);
+        if (status != ERROR_SUCCESS) {
+            return mutation_error(std::wstring(descriptor.label) + L" environment: " + win_error(status));
+        }
+        result.changed = result.found = true;
+        return result;
+    }
+
+    const std::wstring current = string_value(path_value);
+    std::vector<std::wstring> entries = path_entries(current);
+    const auto match = std::find_if(entries.begin(), entries.end(), [&](const std::wstring& entry) {
+        return equal_fold(entry, path);
+    });
+    result.found = match != entries.end();
+
+    if (append) {
+        if (result.found) {
+            RegCloseKey(key);
+            return result;
+        }
+        result.found = true;
+        if (current.empty()) entries[0] = path;
+        else if (current.back() == L';') entries.back() = path;
+        else entries.push_back(path);
+    } else {
+        if (!result.found) {
+            RegCloseKey(key);
+            return result;
+        }
+        entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const std::wstring& entry) {
+            return equal_fold(entry, path);
+        }), entries.end());
+    }
+
+    const std::wstring updated = join_path_entries(entries);
+    DWORD bytes = 0;
+    if (!registry_string_size(updated, bytes)) {
+        RegCloseKey(key);
+        return mutation_error(std::wstring(descriptor.label) + L" environment: Path value is too large");
+    }
+    const LONG status = RegSetValueExW(key, path_value.name.c_str(), 0, path_value.type,
+                                       reinterpret_cast<const BYTE*>(updated.c_str()), bytes);
+    RegCloseKey(key);
+    if (status != ERROR_SUCCESS) {
+        result.error = std::wstring(descriptor.label) + L" environment: " + win_error(status);
+        return result;
+    }
+    result.changed = true;
     return result;
 }
 
@@ -217,6 +376,20 @@ Result remove_name(Scope scope, const std::wstring& name) {
 
 Result remove_path(Scope scope, const std::wstring& path) {
     return mutate(scope, [&](const Root& descriptor) { return remove_from_root(descriptor, [&](const std::wstring&, const std::wstring& value) { return equal_fold(value, path); }); });
+}
+
+Result append_path(Scope scope, const std::wstring& path) {
+    if (path.empty() || path.find(L';') != std::wstring::npos) {
+        return mutation_error(L"Path entries must be non-empty and must not contain ';'");
+    }
+    return mutate(scope, [&](const Root& descriptor) { return update_path_entry(descriptor, path, true); });
+}
+
+Result remove_path_entry(Scope scope, const std::wstring& path) {
+    if (path.empty() || path.find(L';') != std::wstring::npos) {
+        return mutation_error(L"Path entries must be non-empty and must not contain ';'");
+    }
+    return mutate(scope, [&](const Root& descriptor) { return update_path_entry(descriptor, path, false); });
 }
 
 Result contains_path(Scope scope, const std::wstring& path, std::vector<Entry>& matches, std::wstring& error) {

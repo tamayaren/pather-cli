@@ -6,7 +6,7 @@
 
 namespace pather {
 
-enum class Command { List, RemoveName, RemovePath, Set, Check };
+enum class Command { List, RemoveName, RemovePath, RemovePathEntry, AppendPath, Set, Check };
 
 struct Options {
     Command command = Command::List;

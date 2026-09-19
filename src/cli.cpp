@@ -102,6 +102,8 @@ void print_usage() {
         L"  pather -ls [-e user|sys|all]\n"
         L"  pather -rm -n NAME [-e user|sys|all]\n"
         L"  pather -rm -p PATH [-e user|sys|all]\n"
+        L"  pather -rm PATH [user|sys|all]\n"
+        L"  pather PATH [user|sys|all]\n"
         L"  pather NAME PATH [-e user|sys|all]\n"
         L"  pather -c PATH\n",
         true);
@@ -134,27 +136,65 @@ bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
         return true;
     } else if (first == L"-rm") {
         ++index;
-        if (index >= argc || (lower(argv[index]) != L"-n" && lower(argv[index]) != L"-p")) {
-            error = L"-rm requires -n NAME or -p PATH";
+        if (index >= argc) {
+            error = L"-rm requires -n NAME, -p PATH, or PATH";
             return false;
         }
 
-        const bool by_name = lower(argv[index]) == L"-n";
-        if (++index >= argc || std::wstring(argv[index]).empty()) {
-            error = L"remove option requires a non-empty value";
-            return false;
+        const std::wstring remove_option = lower(argv[index]);
+        if (remove_option == L"-n" || remove_option == L"-p") {
+            const bool by_name = remove_option == L"-n";
+            if (++index >= argc || std::wstring(argv[index]).empty()) {
+                error = L"remove option requires a non-empty value";
+                return false;
+            }
+            options.command = by_name ? Command::RemoveName : Command::RemovePath;
+            options.value = argv[index++];
+        } else {
+            if (std::wstring(argv[index]).empty() || remove_option[0] == L'-') {
+                error = L"-rm requires -n NAME, -p PATH, or PATH";
+                return false;
+            }
+            options.command = Command::RemovePathEntry;
+            options.value = argv[index++];
+            if (index < argc && scope_token(argv[index], options.scope)) {
+                options.scopeSpecified = true;
+                ++index;
+            }
         }
-        options.command = by_name ? Command::RemoveName : Command::RemovePath;
-        options.value = argv[index++];
     } else {
-        if (first.empty() || first[0] == L'-' || index + 1 >= argc ||
-            std::wstring(argv[index]).empty() || std::wstring(argv[index + 1]).empty()) {
-            error = L"expected non-empty NAME PATH";
+        if (first.empty() || first[0] == L'-' || std::wstring(argv[index]).empty()) {
+            error = L"expected PATH, or non-empty NAME PATH";
             return false;
         }
-        options.command = Command::Set;
-        options.name = argv[index++];
         options.value = argv[index++];
+        if (index == argc || lower(argv[index]) == L"-e") {
+            options.command = Command::AppendPath;
+        } else {
+            Scope positional_scope = Scope::All;
+            if (scope_token(argv[index], positional_scope)) {
+                const bool has_explicit_scope_option =
+                    index + 1 < argc && lower(argv[index + 1]) == L"-e";
+                if (has_explicit_scope_option) {
+                    options.command = Command::Set;
+                    options.name = options.value;
+                    options.value = argv[index++];
+                } else {
+                    options.command = Command::AppendPath;
+                    options.scope = positional_scope;
+                    options.scopeSpecified = true;
+                    ++index;
+                }
+            } else {
+                if (std::wstring(argv[index]).empty()) {
+                    error = L"expected non-empty NAME PATH";
+                    return false;
+                }
+                options.command = Command::Set;
+                options.name = options.value;
+                options.value = argv[index++];
+            }
+        }
     }
 
     while (index < argc) {
@@ -176,8 +216,14 @@ bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
 
     if (options.command == Command::List && !options.scopeSpecified) {
         options.scope = Scope::All;
-    } else if (options.command == Command::Set && !options.scopeSpecified) {
+    } else if ((options.command == Command::Set || options.command == Command::AppendPath) &&
+               !options.scopeSpecified) {
         options.scope = Scope::User;
+    }
+    if ((options.command == Command::AppendPath || options.command == Command::RemovePathEntry) &&
+        options.value.find(L';') != std::wstring::npos) {
+        error = L"Path entries must not contain ';'";
+        return false;
     }
     return true;
 }
@@ -218,11 +264,27 @@ int run(const Options& options) {
         return matches.empty() ? 1 : 0;
     }
 
-    const Result result = options.command == Command::Set
-        ? set_value(options.scope, options.name, options.value)
-        : (options.command == Command::RemoveName
-            ? remove_name(options.scope, options.value)
-            : remove_path(options.scope, options.value));
+    Result result;
+    switch (options.command) {
+        case Command::Set:
+            result = set_value(options.scope, options.name, options.value);
+            break;
+        case Command::AppendPath:
+            result = append_path(options.scope, options.value);
+            break;
+        case Command::RemoveName:
+            result = remove_name(options.scope, options.value);
+            break;
+        case Command::RemovePath:
+            result = remove_path(options.scope, options.value);
+            break;
+        case Command::RemovePathEntry:
+            result = remove_path_entry(options.scope, options.value);
+            break;
+        default:
+            result.error = L"invalid mutation command";
+            break;
+    }
 
     if (!result.error.empty()) {
         write_text(result.error + L"\n", true);
@@ -236,6 +298,9 @@ int run(const Options& options) {
     }
     if (!result.found) {
         return 1;
+    }
+    if (!result.changed) {
+        return 0;
     }
 
     if (!notify_environment_change(error)) {
