@@ -6,7 +6,7 @@
 
 namespace pather {
 
-enum class Command { List, RemoveName, RemovePath, RemovePathEntry, AppendPath, Set, Check };
+enum class Command { Help, List, ListPath, RemoveName, RemovePath, RemovePathEntry, AppendPath, Set, Check };
 
 struct Options {
     Command command = Command::List;
@@ -17,7 +17,7 @@ struct Options {
 };
 
 bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error);
-void print_usage();
+bool print_usage(bool error_stream = true);
 int run(const Options& options);
 
 }

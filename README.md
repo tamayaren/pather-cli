@@ -29,7 +29,9 @@ keeps its original environment. From the current directory, run `.\pather.exe`.
 Run the commands from a Windows/MinGW environment. System-scope changes normally
 require an elevated shell.
 
-Exit status is `0` for success, `1` when a requested entry/path is not found, `2` for invalid usage, and `3` for an operational failure. `-ls` defaults to both scopes; setting and Path appending default to user; removal defaults to both when `-e` is omitted. System changes generally require elevation. Mutations broadcast `WM_SETTINGCHANGE` for `Environment`.
+Run `pather -help` to display an ASCII Pather banner and command usage.
+
+Exit status is `0` for success, `1` when a requested entry/path is not found, `2` for invalid usage, and `3` for an operational failure. `-ls` and `-ls Path` default to both scopes; setting and Path appending default to user; removal defaults to both when `-e` is omitted. System changes generally require elevation. Mutations broadcast `WM_SETTINGCHANGE` for `Environment`.
 
 Names and values are compared case-insensitively using Windows ordinal comparison.
 Generic value matching is exact: Pather does not trim, normalize, or expand values.
@@ -45,8 +47,11 @@ Individual Path operands must not contain `;`.
 Examples:
 
 ```text
+pather -help
 pather -ls
 pather -ls -e sys
+pather -ls Path
+pather -ls Path -e user
 pather MyPath "C:\\Program Files\\Tool" -e user
 pather "C:\\Tools" user
 pather "C:\\Tools" sys
@@ -57,7 +62,21 @@ pather -rm -p "C:\\Program Files\\Tool" -e all
 pather -c "C:\\Program Files\\Tool"
 ```
 
+`pather -ls Path [-e user|sys|all]` lists each non-empty entry in the selected
+`Path` registry variables on its own line, prefixed with its scope and variable
+name (for example, `[user] Path=C:\Tools`). The `Path` argument is case-insensitive.
+Entries retain their order and literal values, including unexpanded `%VARIABLE%`
+references. Empty segments are skipped; an absent or empty Path produces no lines.
+
 `pather PATH [user|sys|all]` appends an entry to the selected `Path` registry
 variable. `pather -rm PATH [user|sys|all]` removes matching entries from that
 variable. The existing `-rm -p PATH` form remains the generic exact-value removal
 operation for compatibility.
+
+After building, run the read-only CLI checks in PowerShell:
+
+```powershell
+.\tests\cli.ps1
+# For a binary built elsewhere:
+.\tests\cli.ps1 -Executable .\build\Pather.exe
+```

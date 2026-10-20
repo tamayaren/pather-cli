@@ -96,17 +96,25 @@ bool write_text(const std::wstring& text, bool error_stream) {
 
 }  // namespace
 
-void print_usage() {
-    write_text(
+bool print_usage(bool error_stream) {
+    return write_text(
         L"Usage:\n"
-        L"  pather -ls [-e user|sys|all]\n"
+        L"  pather -help                           Show this help\n"
+        L"  pather -ls [-e user|sys|all]            List environment variables\n"
+        L"  pather -ls Path [-e user|sys|all]       List individual Path entries\n"
         L"  pather -rm -n NAME [-e user|sys|all]\n"
         L"  pather -rm -p PATH [-e user|sys|all]\n"
         L"  pather -rm PATH [user|sys|all]\n"
         L"  pather PATH [user|sys|all]\n"
         L"  pather NAME PATH [-e user|sys|all]\n"
-        L"  pather -c PATH\n",
-        true);
+        L"  pather -c PATH\n"
+        L"\n"
+        L"PATH appends to Path; NAME PATH sets an environment variable.\n"
+        L"-rm -n removes a variable, -rm -p removes exact matching values,\n"
+        L"and -rm PATH removes an individual Path entry. -c checks exact values.\n"
+        L"Listing and removal default to all scopes; setting and appending to user.\n"
+        L"System changes normally require an elevated shell.\n",
+        error_stream);
 }
 
 bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
@@ -119,9 +127,20 @@ bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
     int index = 1;
     const std::wstring first = lower(argv[index]);
 
-    if (first == L"-ls") {
+    if (first == L"-help") {
+        options.command = Command::Help;
+        if (argc != 2) {
+            error = L"-help accepts no additional arguments";
+            return false;
+        }
+        return true;
+    } else if (first == L"-ls") {
         options.command = Command::List;
         ++index;
+        if (index < argc && lower(argv[index]) == L"path") {
+            options.command = Command::ListPath;
+            ++index;
+        }
     } else if (first == L"-c") {
         options.command = Command::Check;
         if (++index >= argc || std::wstring(argv[index]).empty()) {
@@ -214,7 +233,8 @@ bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
         ++index;
     }
 
-    if (options.command == Command::List && !options.scopeSpecified) {
+    if ((options.command == Command::List || options.command == Command::ListPath) &&
+        !options.scopeSpecified) {
         options.scope = Scope::All;
     } else if ((options.command == Command::Set || options.command == Command::AppendPath) &&
                !options.scopeSpecified) {
@@ -231,13 +251,39 @@ bool parse(int argc, wchar_t* argv[], Options& options, std::wstring& error) {
 int run(const Options& options) {
     std::wstring error;
 
-    if (options.command == Command::List) {
+    if (options.command == Command::Help) {
+        if (!write_text(LR"( ____       _   _
+|  _ \ __ _| |_| |__   ___ _ __
+| |_) / _` | __| '_ \ / _ \ '__|
+|  __/ (_| | |_| | | |  __/ |
+|_|   \__,_|\__|_| |_|\___|_|
+
+Pather - Windows environment variable manager
+
+)", false)) {
+            return 3;
+        }
+        return print_usage(false) ? 0 : 3;
+    }
+
+    if (options.command == Command::List || options.command == Command::ListPath) {
         const auto entries = list(options.scope, error);
         for (const auto& entry : entries) {
-            if (!write_text(L"[" + std::wstring(scope_label(entry.scope)) + L"] " +
-                                entry.name + L"=" + entry.value + L"\n",
-                            false)) {
-                return 3;
+            const std::wstring prefix = L"[" + std::wstring(scope_label(entry.scope)) +
+                                        L"] " + entry.name + L"=";
+            if (options.command == Command::ListPath) {
+                if (lower(entry.name) != L"path") continue;
+                size_t start = 0;
+                while (start < entry.value.size()) {
+                    const size_t separator = entry.value.find(L';', start);
+                    const std::wstring path = entry.value.substr(start,
+                        separator == std::wstring::npos ? std::wstring::npos : separator - start);
+                    if (!path.empty() && !write_text(prefix + path + L"\n", false)) return 3;
+                    if (separator == std::wstring::npos) break;
+                    start = separator + 1;
+                }
+            } else {
+                if (!write_text(prefix + entry.value + L"\n", false)) return 3;
             }
         }
         if (!error.empty()) {
